@@ -199,8 +199,8 @@ NTSTATUS litepciedrv_DeviceOpen(WDFDEVICE wdfDevice,
         litepcie->chan[i].dma.writer_lock = 0;
         litepcie->chan[i].dma.reader_lock = 0;
 
-        WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &litepcie->chan[i].dma.readLock);
-        WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &litepcie->chan[i].dma.writeLock);
+        WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &litepcie->chan[i].dma.readerLock);
+        WdfSpinLockCreate(WDF_NO_OBJECT_ATTRIBUTES, &litepcie->chan[i].dma.writerLock);
 
 
         switch (i) {
@@ -387,9 +387,13 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
 
         // Get available buffers
         // LITEPCIE DMA calls C2H channel the "writer"
-        if ((channel->dma.writer_hw_count - channel->dma.writer_sw_count) > 0)
+        WdfSpinLockAcquire(channel->dma.writerLock);
+        INT64 available_count = channel->dma.writer_hw_count - channel->dma.writer_sw_count;
+        WdfSpinLockRelease(channel->dma.writerLock);
+
+        if ((available_count) > 0)
         {
-            if ((channel->dma.writer_hw_count - channel->dma.writer_sw_count) > DMA_BUFFER_COUNT / 2)
+            if ((available_count) > (DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ))
             {
                 overflows++;
             }
@@ -451,9 +455,13 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
 
         // Get available buffers
         // LITEPCIE DMA calls H2C channel the "reader"
-        if ((channel->dma.reader_hw_count - channel->dma.reader_sw_count) > 0)
+        WdfSpinLockAcquire(channel->dma.readerLock);
+        INT64 available_count = channel->dma.reader_hw_count - channel->dma.reader_sw_count;
+        WdfSpinLockRelease(channel->dma.readerLock);
+
+        if ((available_count) > 0)
         {
-            if ((channel->dma.reader_hw_count - channel->dma.reader_sw_count) > DMA_BUFFER_COUNT / 2)
+            if ((available_count) > DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ)
             {
                 overflows++;
             }
@@ -693,11 +701,13 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
         if (irq_vector & (1 << pChan->dma.reader_interrupt)) {
             loop_status = litepciedrv_RegReadl(dev, pChan->dma.base +
                 PCIE_DMA_READER_TABLE_LOOP_STATUS_OFFSET);
+            WdfSpinLockAcquire(pChan->dma.readerLock);
             pChan->dma.reader_hw_count &= ((~(DMA_BUFFER_COUNT - 1) << 16) & 0xffffffffffff0000);
             pChan->dma.reader_hw_count |= (loop_status >> 16) * DMA_BUFFER_COUNT + (loop_status & 0xffff);
             if (pChan->dma.reader_hw_count_last > pChan->dma.reader_hw_count)
                 pChan->dma.reader_hw_count += (INT64)(1UL << (leftmost_bit(DMA_BUFFER_COUNT) + 16));
             pChan->dma.reader_hw_count_last = pChan->dma.reader_hw_count;
+            WdfSpinLockRelease(pChan->dma.readerLock);
 #ifdef DEBUG_MSI
             TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "MSI DMA%d Reader buf: %lld\n", i,
                 pChan->dma.reader_hw_count);
@@ -712,11 +722,13 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
         if (irq_vector & (1 << pChan->dma.writer_interrupt)) {
             loop_status = litepciedrv_RegReadl(dev, pChan->dma.base +
                 PCIE_DMA_WRITER_TABLE_LOOP_STATUS_OFFSET);
+            WdfSpinLockAcquire(pChan->dma.writerLock);
             pChan->dma.writer_hw_count &= ((~(DMA_BUFFER_COUNT - 1) << 16) & 0xffffffffffff0000);
             pChan->dma.writer_hw_count |= (loop_status >> 16) * DMA_BUFFER_COUNT + (loop_status & 0xffff);
             if (pChan->dma.writer_hw_count_last > pChan->dma.writer_hw_count)
                 pChan->dma.writer_hw_count += (INT64)(1UL << (leftmost_bit(DMA_BUFFER_COUNT) + 16));
             pChan->dma.writer_hw_count_last = pChan->dma.writer_hw_count;
+            WdfSpinLockRelease(pChan->dma.writerLock);
 #ifdef DEBUG_MSI
             TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "MSI DMA%d Writer buf: %lld\n", i,
                 pChan->dma.writer_hw_count);

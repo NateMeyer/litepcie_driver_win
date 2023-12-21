@@ -21,8 +21,8 @@ struct litepcie_dma_chan {
     UINT32 base;
     UINT32 reader_interrupt;
     UINT32 writer_interrupt;
-    WDFSPINLOCK readLock;
-    WDFSPINLOCK writeLock;
+    WDFSPINLOCK readerLock;
+    WDFSPINLOCK writerLock;
     WDFREQUEST readRequest;
     SIZE_T readRemainingBytes;
     WDFREQUEST writeRequest;
@@ -33,11 +33,11 @@ struct litepcie_dma_chan {
     PVOID writer_handle[DMA_BUFFER_COUNT];
     PHYSICAL_ADDRESS reader_addr[DMA_BUFFER_COUNT];
     PHYSICAL_ADDRESS writer_addr[DMA_BUFFER_COUNT];
-    INT64 reader_hw_count;
-    INT64 reader_hw_count_last;
+    volatile INT64 reader_hw_count;
+    volatile INT64 reader_hw_count_last;
     INT64 reader_sw_count;
-    INT64 writer_hw_count;
-    INT64 writer_hw_count_last;
+    volatile INT64 writer_hw_count;
+    volatile INT64 writer_hw_count_last;
     INT64 writer_sw_count;
     UINT8 writer_enable;
     UINT8 reader_enable;
