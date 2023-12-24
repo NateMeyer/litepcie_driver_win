@@ -318,10 +318,10 @@ NTSTATUS litepciedrv_DeviceOpen(WDFDEVICE wdfDevice,
 
         /* for each dma buffer */
         for (UINT32 j = 0; j < DMA_BUFFER_COUNT; j++) {
-            /* assign rd mdl */
+            /* assign reader buffers */
             dmachan->reader_handle[j] = (PVOID)((PUINT8)rdVirtAddr + (j * DMA_BUFFER_SIZE));
             dmachan->reader_addr[j].QuadPart = rdPhysAddr.QuadPart + (j * DMA_BUFFER_SIZE);
-            /* assign wr mdl */
+            /* assign writer buffers */
             dmachan->writer_handle[j] = (PVOID)((PUINT8)wrVirtAddr + (j * DMA_BUFFER_SIZE));
             dmachan->writer_addr[j].QuadPart = wrPhysAddr.QuadPart + (j * DMA_BUFFER_SIZE);
 
@@ -425,6 +425,7 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
     }
     else
     {
+        TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelRead deferred\n");
         channel->dma.readRequest = request;
         channel->dma.readRemainingBytes = length - bytesRead;
     }
@@ -461,7 +462,7 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
 
         if ((available_count) > 0)
         {
-            if ((available_count) > DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ)
+            if ((available_count) > DMA_BUFFER_COUNT)
             {
                 overflows++;
             }
@@ -492,6 +493,7 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
     }
     else
     {
+        TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelWrite deferred\n");
         channel->dma.writeRequest = request;
         channel->dma.writeRemainingBytes = length - bytesWritten;
     }
@@ -517,9 +519,6 @@ VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
 #endif
             (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
-        /* Get Phys Address from MDL */
-        //MmProbeAndLockPages(dmachan->writerList[i], KernelMode, IoWriteAccess);
-        //PVOID physAddr = MmGetSystemAddressForMdlSafe(dmachan->writerList[i], NormalPagePriority);
         /* Fill 32-bit Address LSB. */
         litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET + 4, dmachan->writer_addr[index].LowPart);
         /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
@@ -549,11 +548,6 @@ VOID litepcie_dma_writer_stop(PDEVICE_CONTEXT dev, UINT32 index)
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 0);
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_FLUSH_OFFSET, 1);
 
-    //Unlock buffer pages
-    //for (UINT32 i = 0; i < DMA_BUFFER_COUNT; i++)
-    //{
-    //    MmUnlockPages(dmachan->writerList[i]);
-    //}
 
     /* Clear counters. */
     dmachan->writer_hw_count = 0;
@@ -581,13 +575,10 @@ VOID litepcie_dma_reader_start(PDEVICE_CONTEXT dev, UINT32 index)
 #endif
             (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
-        /* Get Phys Address from MDL */
-        //MmProbeAndLockPages(dmachan->readerList[i], KernelMode, IoWriteAccess);
-        //PVOID physAddr = MmGetSystemAddressForMdlSafe(dmachan->readerList[i], NormalPagePriority);
         /* Fill 32-bit Address LSB. */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, dmachan->writer_addr[index].LowPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, dmachan->reader_addr[index].LowPart);
         /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_WE_OFFSET, dmachan->writer_addr[index].HighPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_WE_OFFSET, dmachan->reader_addr[index].HighPart);
     }
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_LOOP_PROG_N_OFFSET, 1);
 
@@ -612,12 +603,6 @@ VOID litepcie_dma_reader_stop(PDEVICE_CONTEXT dev, UINT32 index)
     KeStallExecutionProcessor(1000);
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 0);
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_FLUSH_OFFSET, 1);
-
-    //Unlock buffer pages
-    //for (UINT32 i = 0; i < DMA_BUFFER_COUNT; i++)
-    //{
-    //  MmUnlockPages(dmachan->readerList[i]);
-    //}
 
     /* Clear counters. */
     dmachan->reader_hw_count = 0;
