@@ -25,13 +25,13 @@
 #include <soc.h>
 
 #define DMA_EN
-//#define FLASH_EN
+#define FLASH_EN
 
 /* Parameters */
 /*------------*/
 
 //#define DMA_CHECK_DATA   /* Un-comment to disable data check */
-#define DMA_RANDOM_DATA  /* Un-comment to disable data random */
+//#define DMA_RANDOM_DATA  /* Un-comment to disable data random */
 
 /* Variables */
 /*-----------*/
@@ -114,7 +114,7 @@ static void info(void)
     printf("FPGA Identifier:  %s.\n", fpga_identifier);
 
 #ifdef CSR_DNA_BASE
-    printf("FPGA DNA:         0x%08x%08x\n", 
+    printf("FPGA DNA:         0x%08x%08x\n",
         read_reg(fd, CSR_DNA_ID_ADDR + 4 * 0),
         read_reg(fd, CSR_DNA_ID_ADDR + 4 * 1));
 #endif
@@ -140,12 +140,7 @@ void scratch_test(void)
     printf("-------------------------\n");
 
     /* Open LitePCIe device. */
-    //WCHAR devName[1024] = { 0 };
-    //wcscpy_s(devName, litepcie_device);
-    //wcscat_s(devName, L"\\CTRL");
-    //fd = CreateFile(devName, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-    //    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    fd = litepcie_open("\\CTRL", GENERIC_READ | GENERIC_WRITE);
+    fd = litepcie_open("\\CTRL", FILE_ATTRIBUTE_NORMAL);
     if (fd == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Could not init driver\n");
         exit(1);
@@ -189,11 +184,7 @@ static void flash_program(uint32_t base, const uint8_t* buf1, int size1)
     int errors;
 
     /* Open LitePCIe device. */
-    WCHAR devName[1024] = { 0 };
-    wcscpy_s(devName, litepcie_device);
-    wcscat_s(devName, L"\\CTRL");
-    fd = CreateFile(devName, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    fd = litepcie_open("\\CTRL", FILE_ATTRIBUTE_NORMAL);
     if (fd == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Could not init driver\n");
         exit(1);
@@ -204,7 +195,7 @@ static void flash_program(uint32_t base, const uint8_t* buf1, int size1)
     size = ((size1 + sector_size - 1) / sector_size) * sector_size;
 
     /* Alloc buffer and copy data to it. */
-    buf = calloc(1, size);
+    buf = (uint8_t*)calloc(1, size);
     if (!buf) {
         fprintf(stderr, "%d: alloc failed\n", __LINE__);
         exit(1);
@@ -234,7 +225,7 @@ static void flash_write(const char* filename, uint32_t offset)
     FILE* f;
 
     /* Open data source file. */
-    f = fopen(filename, "rb");
+    fopen_s(&f, filename, "rb");
     if (!f) {
         perror(filename);
         exit(1);
@@ -244,12 +235,12 @@ static void flash_write(const char* filename, uint32_t offset)
     fseek(f, 0L, SEEK_END);
     size = ftell(f);
     fseek(f, 0L, SEEK_SET);
-    data = malloc(size);
+    data = (uint8_t*)malloc(size);
     if (!data) {
         fprintf(stderr, "%d: malloc failed\n", __LINE__);
         exit(1);
     }
-    ssize_t ret = fread(data, size, 1, f);
+    size_t ret = fread(data, size, 1, f);
     fclose(f);
 
     /* Program file to flash */
@@ -272,18 +263,14 @@ static void flash_read(const char* filename, uint32_t size, uint32_t offset)
     int i;
 
     /* Open data destination file. */
-    f = fopen(filename, "wb");
+    fopen_s(&f, filename, "wb");
     if (!f) {
         perror(filename);
         exit(1);
     }
 
     /* Open LitePCIe device. */
-    WCHAR devName[1024] = { 0 };
-    wcscpy_s(devName, litepcie_device);
-    wcscat_s(devName, L"\\CTRL");
-    fd = CreateFile(devName, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    fd = litepcie_open("\\CTRL", FILE_ATTRIBUTE_NORMAL);
     if (fd == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Could not init driver\n");
         exit(1);
@@ -313,11 +300,7 @@ static void flash_reload(void)
     file_t fd;
 
     /* Open LitePCIe device. */
-    WCHAR devName[1024] = { 0 };
-    wcscpy_s(devName, litepcie_device);
-    wcscat_s(devName, L"\\CTRL");
-    fd = CreateFile(devName, GENERIC_READ | GENERIC_WRITE, 0, NULL,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    fd = litepcie_open("\\CTRL", FILE_ATTRIBUTE_NORMAL);
     if (fd == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Could not init driver\n");
         exit(1);
@@ -427,6 +410,8 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
     /* Statistics */
     int i = 0;
     int64_t reader_sw_count_last = 0;
+    int64_t reader_hw_count_last = 0;
+    int64_t writer_hw_count_last = 0;
     int64_t last_time;
     uint32_t errors = 0;
 
@@ -446,6 +431,20 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
     if (litepcie_dma_init(&dma, "\\DMA0", zero_copy))
         exit(1);
 
+#ifdef DMA_CHECK_DATA
+    /* DMA-TX Write. */
+    while (1) {
+        char* buf_wr;
+        /* Get Write buffer. */
+        buf_wr = litepcie_dma_next_write_buffer(&dma);
+        /* Break when no buffer available for Write. */
+        if (!buf_wr)
+            break;
+        /* Write data to buffer. */
+        write_pn_data((uint32_t*)buf_wr, DMA_BUFFER_SIZE / sizeof(uint32_t), &seed_wr, data_width);
+    }
+#endif
+
     /* Test loop. */
     last_time = get_time_ms();
     for (;;) {
@@ -457,11 +456,9 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
         litepcie_dma_process(&dma);
 
 #ifdef DMA_CHECK_DATA
-        char* buf_wr;
-        char* buf_rd;
-
         /* DMA-TX Write. */
         while (1) {
+            char* buf_wr;
             /* Get Write buffer. */
             buf_wr = litepcie_dma_next_write_buffer(&dma);
             /* Break when no buffer available for Write. */
@@ -473,6 +470,7 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
 
         /* DMA-RX Read/Check */
         while (1) {
+            char* buf_rd;
             /* Get Read buffer. */
             buf_rd = litepcie_dma_next_read_buffer(&dma);
             /* Break when no buffer available for Read. */
@@ -528,10 +526,18 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
                 dma.writer_sw_count,
                 dma.reader_sw_count - dma.writer_sw_count,
                 errors);
+//            printf("\t\t%10.2f\t%10.2f\n",
+//                (double)(dma.reader_hw_count - reader_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6),
+//                (double)(dma.writer_hw_count - writer_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6));
+//            printf("\t\t%10" PRIi64 "\t%10" PRIi64 "\n",
+//                (dma.reader_hw_count - dma.reader_sw_count),
+//                (dma.writer_hw_count - dma.writer_sw_count));
             /* Update errors/time/count. */
             errors = 0;
             last_time = get_time_ms();
             reader_sw_count_last = dma.reader_sw_count;
+            reader_hw_count_last = dma.reader_hw_count;
+            writer_hw_count_last = dma.writer_hw_count;
         }
     }
 

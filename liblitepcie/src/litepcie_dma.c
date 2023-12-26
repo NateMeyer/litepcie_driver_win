@@ -95,10 +95,11 @@ int litepcie_dma_init(struct litepcie_dma_ctrl *dma, const char *device_name, ui
     dma->zero_copy = zero_copy;
 
     int32_t flags = FILE_ATTRIBUTE_NORMAL;
-    if (zero_copy)
-    {
-        flags |= FILE_FLAG_OVERLAPPED;
-    }
+    //if (zero_copy)
+    //{
+    //    flags |= FILE_FLAG_OVERLAPPED;
+    //}
+    flags |= (FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
 
     dma->dma_fd = litepcie_open(device_name, flags);
     if (dma->dma_fd == INVALID_HANDLE_VALUE) {
@@ -192,7 +193,7 @@ void litepcie_dma_cleanup(struct litepcie_dma_ctrl *dma)
 void litepcie_dma_process(struct litepcie_dma_ctrl *dma)
 {
     DWORD len = 0;
-    int ret = 1;
+    DWORD retVal;
 
     /* set / get dma */
     if (dma->use_writer)
@@ -202,37 +203,10 @@ void litepcie_dma_process(struct litepcie_dma_ctrl *dma)
 
     if (dma->zero_copy) {
         /* count available buffers */
-        dma->buffers_available_read = dma->writer_hw_count - dma->writer_sw_count;
-        dma->usr_read_buf_offset = dma->writer_sw_count % DMA_BUFFER_COUNT;
-
-        /* update dma sw_count*/
-        dma->mmap_dma_update.sw_count = dma->writer_sw_count + dma->buffers_available_read;
-        checked_ioctl(dma->dma_fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE,
-            &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update),
-            &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update), &len, 0);
-    } else {
-        dma->buffers_available_read = dma->writer_hw_count - dma->writer_sw_count;
-        if (dma->buffers_available_read > 1)
-        {
-            if (!ReadFile(dma->dma_fd, dma->buf_rd, DMA_BUFFER_TOTAL_SIZE, &len, NULL))
-            {
-                fprintf(stderr, "Read failed: %d\n", GetLastError());
-                fprintf(stderr, "Read args: 0x%p - 0x%lx - 0x%x\n", dma->buf_rd, dma->buffers_available_read, len);
-                litepcie_dma_cleanup(dma);
-                abort();
-            }
-        }
-        dma->buffers_available_read = len / DMA_BUFFER_SIZE;
-        dma->usr_read_buf_offset = 0;
-    }
-
-    /* write event */
-    if (dma->zero_copy) {
-        /* count available buffers */
         dma->buffers_available_write = (DMA_BUFFER_COUNT / 2) - (dma->reader_sw_count - dma->reader_hw_count);
         if (dma->buffers_available_write >= (DMA_BUFFER_COUNT / 2))
         {
-            dma->buffers_available_read = DMA_BUFFER_COUNT / 2;
+            dma->buffers_available_write = DMA_BUFFER_COUNT / 2;
         }
         dma->usr_write_buf_offset = dma->reader_sw_count % DMA_BUFFER_COUNT;
 
@@ -242,20 +216,74 @@ void litepcie_dma_process(struct litepcie_dma_ctrl *dma)
             &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update),
             &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update), &len, 0);
 
-    } else {
-        dma->buffers_available_write = (dma->reader_sw_count - dma->reader_hw_count);
+        /* count available buffers */
+        dma->buffers_available_read = dma->writer_hw_count - dma->writer_sw_count;
+        dma->usr_read_buf_offset = dma->writer_sw_count % DMA_BUFFER_COUNT;
+
+        /* update dma sw_count*/
+        dma->mmap_dma_update.sw_count = dma->writer_sw_count + dma->buffers_available_read;
+        checked_ioctl(dma->dma_fd, LITEPCIE_IOCTL_MMAP_DMA_WRITER_UPDATE,
+            &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update),
+            &dma->mmap_dma_update, sizeof(struct litepcie_ioctl_mmap_dma_update), &len, 0);
+
+    }
+    else {
+        OVERLAPPED writeData = { 0 };
+        OVERLAPPED readData = { 0 };
+        
+        //Start Write
+        dma->buffers_available_write = (dma->reader_hw_count - dma->reader_sw_count);
+        if (dma->buffers_available_write >= (DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ))
+        {
+            dma->buffers_available_write = DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ;
+        }
         if (dma->buffers_available_write > 1)
         {
-            if(!WriteFile(dma->dma_fd, dma->buf_wr, DMA_BUFFER_TOTAL_SIZE, &len, NULL))
+            WriteFile(dma->dma_fd, dma->buf_wr, dma->buffers_available_write * DMA_BUFFER_SIZE, &len, &writeData);
+        }
+
+        //Start Read
+        dma->buffers_available_read = dma->writer_hw_count - dma->writer_sw_count;
+        if (dma->buffers_available_read >= (DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ))
+        {
+            dma->buffers_available_read = DMA_BUFFER_COUNT - DMA_BUFFER_PER_IRQ;
+        }
+        if (dma->buffers_available_read > 1)
+        {
+            ReadFile(dma->dma_fd, dma->buf_rd, dma->buffers_available_read * DMA_BUFFER_SIZE, &len, &readData);
+        }
+        //Complete Read
+        len = 0;
+        if (dma->buffers_available_read > 1)
+        {
+            if (!GetOverlappedResult(dma->dma_fd, &readData, &len, TRUE))
+            {
+                fprintf(stderr, "Read failed: %d\n", GetLastError());
+                fprintf(stderr, "Read args: 0x%p - 0x%lx - 0x%x\n", dma->buf_rd, dma->buffers_available_read, len);
+                fprintf(stderr, "DMA Writer: 0x%llx - 0x%llx\n", dma->writer_hw_count, dma->writer_sw_count);
+                litepcie_dma_cleanup(dma);
+                abort();
+            }
+        }
+        dma->buffers_available_read = len / DMA_BUFFER_SIZE;
+        dma->usr_read_buf_offset = 0;
+
+        //Complete Write
+        len = 0;
+        if (dma->buffers_available_write > 1)
+        {
+            if (!GetOverlappedResult(dma->dma_fd, &writeData, &len, TRUE))
             {
                 fprintf(stderr, "Write failed: %d\n", GetLastError());
                 fprintf(stderr, "Write args: 0x%p - 0x%lx - %x\n", dma->buf_wr, dma->buffers_available_write, len);
+                fprintf(stderr, "DMA Reader: 0x%llx - 0x%llx\n", dma->reader_hw_count, dma->reader_sw_count);
                 litepcie_dma_cleanup(dma);
                 abort();
             }
         }
         dma->buffers_available_write = len / DMA_BUFFER_SIZE;
         dma->usr_write_buf_offset = 0;
+
     }
 }
 

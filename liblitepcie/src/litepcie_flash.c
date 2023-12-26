@@ -35,6 +35,26 @@
 //#define FLASH_FULL_ERASE
 #define FLASH_RETRIES 16
 
+#if defined(_WIN32)
+void usleep(INT64 usec)
+{
+    HANDLE timer;
+    LARGE_INTEGER delay;
+
+    delay.QuadPart = -(10 * usec);
+
+    timer = CreateWaitableTimer(NULL, TRUE, NULL);
+    if (NULL == timer)
+    {
+        fprintf(stderr, "Failed to create sleep timer");
+        abort();
+    }
+    SetWaitableTimer(timer, &delay, 0, NULL, NULL, 0);
+    WaitForSingleObject(timer, INFINITE);
+    CloseHandle(timer);
+}
+#endif
+
 static void flash_spi_cs(file_t fd, uint8_t cs_n)
 {
     litepcie_writel(fd, CSR_FLASH_CS_N_OUT_ADDR, cs_n);

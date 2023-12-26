@@ -18,14 +18,12 @@
 #include <unistd.h>
 #endif
 
-#include <time.h>
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include <litepcie_public.h>
-
 #include "litepcie_helpers.h"
 
 
@@ -127,7 +125,11 @@ void _check_ioctl(bool status, const char* file, int line)
 {
     if (status)
     {
+#if defined(_WIN32)
+        fprintf(stderr, "Failed ioctl at %s:%d: %d\n", file, line, GetLastError());
+#else
         fprintf(stderr, "Failed ioctl at %s:%d: %s\n", file, line, strerror(errno));
+#endif
         abort();
     }
 }
