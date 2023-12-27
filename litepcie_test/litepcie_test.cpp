@@ -30,7 +30,7 @@
 /* Parameters */
 /*------------*/
 
-//#define DMA_CHECK_DATA   /* Un-comment to disable data check */
+#define DMA_CHECK_DATA   /* Un-comment to disable data check */
 //#define DMA_RANDOM_DATA  /* Un-comment to disable data random */
 
 /* Variables */
@@ -54,42 +54,6 @@ static int64_t get_time_ms(void)
     return timeMS;
 }
 
-static UINT32 read_reg(HANDLE fd, UINT32 reg)
-{
-    struct litepcie_ioctl_reg regData = { 0 };
-    DWORD len = 0;
-
-    regData.reg = reg;
-    regData.is_write = 0;
-    if (0 == DeviceIoControl(fd, LITEPCIE_IOCTL_REG,
-        &regData, sizeof(struct litepcie_ioctl_reg),
-        &regData, sizeof(struct litepcie_ioctl_reg), &len, 0))
-    {
-        fprintf(stderr, "RegRead failed: %d\n", GetLastError());
-    }
-    if (len != sizeof(struct litepcie_ioctl_reg))
-    {
-        fprintf(stderr, "read_reg returned bad len data. %d\n", len);
-    }
-    return regData.val;
-}
-
-static void write_reg(HANDLE fd, UINT32 reg, UINT32 val)
-{
-    struct litepcie_ioctl_reg regData;
-    DWORD len = 0;
-
-    regData.reg = reg;
-    regData.val = val;
-    regData.is_write = 1;
-    if (0 == DeviceIoControl(fd, LITEPCIE_IOCTL_REG,
-        &regData, sizeof(struct litepcie_ioctl_reg),
-        NULL, 0, &len, 0))
-    {
-        fprintf(stderr, "RegWrite failed: %d\n", GetLastError());
-    }
-}
-
 /* Info */
 /*------*/
 static void info(void)
@@ -109,24 +73,24 @@ static void info(void)
 
     for (i = 0; i < 256; i++)
     {
-        fpga_identifier[i] = read_reg(fd, CSR_IDENTIFIER_MEM_BASE + 4 * i);
+        fpga_identifier[i] = litepcie_readl(fd, CSR_IDENTIFIER_MEM_BASE + 4 * i);
     }
     printf("FPGA Identifier:  %s.\n", fpga_identifier);
 
 #ifdef CSR_DNA_BASE
     printf("FPGA DNA:         0x%08x%08x\n",
-        read_reg(fd, CSR_DNA_ID_ADDR + 4 * 0),
-        read_reg(fd, CSR_DNA_ID_ADDR + 4 * 1));
+        litepcie_readl(fd, CSR_DNA_ID_ADDR + 4 * 0),
+        litepcie_readl(fd, CSR_DNA_ID_ADDR + 4 * 1));
 #endif
 #ifdef CSR_XADC_BASE
     printf("FPGA Temperature: %0.1f °C\n",
-        (double)read_reg(fd, CSR_XADC_TEMPERATURE_ADDR) * 503.975 / 4096 - 273.15);
+        (double)litepcie_readl(fd, CSR_XADC_TEMPERATURE_ADDR) * 503.975 / 4096 - 273.15);
     printf("FPGA VCC-INT:     %0.2f V\n",
-        (double)read_reg(fd, CSR_XADC_VCCINT_ADDR) / 4096 * 3);
+        (double)litepcie_readl(fd, CSR_XADC_VCCINT_ADDR) / 4096 * 3);
     printf("FPGA VCC-AUX:     %0.2f V\n",
-        (double)read_reg(fd, CSR_XADC_VCCAUX_ADDR) / 4096 * 3);
+        (double)litepcie_readl(fd, CSR_XADC_VCCAUX_ADDR) / 4096 * 3);
     printf("FPGA VCC-BRAM:    %0.2f V\n",
-        (double)read_reg(fd, CSR_XADC_VCCBRAM_ADDR) / 4096 * 3);
+        (double)litepcie_readl(fd, CSR_XADC_VCCBRAM_ADDR) / 4096 * 3);
 #endif
     litepcie_close(fd);
 }
@@ -148,13 +112,13 @@ void scratch_test(void)
 
     /* Write to scratch register. */
     printf("Write 0x12345678 to Scratch register:\n");
-    write_reg(fd, CSR_CTRL_SCRATCH_ADDR, 0x12345678);
-    printf("Read: 0x%08x\n", read_reg(fd, CSR_CTRL_SCRATCH_ADDR));
+    litepcie_writel(fd, CSR_CTRL_SCRATCH_ADDR, 0x12345678);
+    printf("Read: 0x%08x\n", litepcie_readl(fd, CSR_CTRL_SCRATCH_ADDR));
 
     /* Read from scratch register. */
     printf("Write 0xdeadbeef to Scratch register:\n");
-    write_reg(fd, CSR_CTRL_SCRATCH_ADDR, 0xdeadbeef);
-    printf("Read: 0x%08x\n", read_reg(fd, CSR_CTRL_SCRATCH_ADDR));
+    litepcie_writel(fd, CSR_CTRL_SCRATCH_ADDR, 0xdeadbeef);
+    printf("Read: 0x%08x\n", litepcie_readl(fd, CSR_CTRL_SCRATCH_ADDR));
 
     /* Close LitePCIe device. */
     litepcie_close(fd);

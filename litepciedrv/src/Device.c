@@ -520,9 +520,9 @@ VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
             (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
         /* Fill 32-bit Address LSB. */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET + 4, dmachan->writer_addr[index].LowPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET + 4, dmachan->writer_addr[i].LowPart);
         /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_WE_OFFSET, dmachan->writer_addr[index].HighPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_WE_OFFSET, dmachan->writer_addr[i].HighPart);
     }
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_LOOP_PROG_N_OFFSET, 1);
 
@@ -576,9 +576,9 @@ VOID litepcie_dma_reader_start(PDEVICE_CONTEXT dev, UINT32 index)
             (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
         /* Fill 32-bit Address LSB. */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, dmachan->reader_addr[index].LowPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, dmachan->reader_addr[i].LowPart);
         /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
-        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_WE_OFFSET, dmachan->reader_addr[index].HighPart);
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_WE_OFFSET, dmachan->reader_addr[i].HighPart);
     }
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_LOOP_PROG_N_OFFSET, 1);
 
