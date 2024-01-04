@@ -274,7 +274,13 @@ NTSTATUS litepciedrv_DeviceOpen(WDFDEVICE wdfDevice,
     WdfDeviceSetAlignmentRequirement(litepcie->deviceDrv, FILE_LONG_ALIGNMENT);
 
     WDF_DMA_ENABLER_CONFIG dmaConfig;
-    WDF_DMA_ENABLER_CONFIG_INIT(&dmaConfig, WdfDmaProfileScatterGather64Duplex, DMA_BUFFER_SIZE);
+    WDF_DMA_ENABLER_CONFIG_INIT(&dmaConfig,
+#if DMA_ADDR_WIDTH > 32
+            WdfDmaProfileScatterGather64Duplex,
+#else
+            WdfDmaProfileScatterGatherDuplex,
+#endif
+            DMA_BUFFER_SIZE);
     status = WdfDmaEnablerCreate(litepcie->deviceDrv, &dmaConfig, WDF_NO_OBJECT_ATTRIBUTES, &litepcie->dmaEnabler);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Failed to create dmaEnabler: %!STATUS!", status);
