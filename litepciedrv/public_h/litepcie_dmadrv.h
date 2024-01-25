@@ -9,6 +9,8 @@
 
 #include "soc.h"
 
+//#define DMA_USE_COMMON_BUFFER
+
 /* DMA Flags */
 #define DMA_IRQ_DISABLE  (1<<24)
 #define DMA_LAST_DISABLE (1<<25)
@@ -17,7 +19,8 @@
 #define DMA_BUFFER_PER_IRQ     32
 #define DMA_BUFFER_COUNT       256
 #define DMA_BUFFER_SIZE        2048
-#define DMA_BUFFER_TOTAL_SIZE (DMA_BUFFER_COUNT*DMA_BUFFER_SIZE)
+#define DMA_BUFFER_TOTAL_SIZE  (DMA_BUFFER_COUNT*DMA_BUFFER_SIZE)
+#define DMA_MAX_TRANSFER_LEN   ((1 << 24) - 1)
 //#define DMA_BUFFER_ALIGNED
 
 /* DMA Offsets */

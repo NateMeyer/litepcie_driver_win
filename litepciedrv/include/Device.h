@@ -42,7 +42,11 @@ struct litepcie_dma_chan {
     UINT8 writer_enable;
     UINT8 reader_enable;
     UINT8 reader_lock;
-    UINT8 writer_lock; 
+    UINT8 writer_lock;
+    WDFDMATRANSACTION readerTransaction;
+    WDFDMATRANSACTION writerTransaction;
+    WDFQUEUE readerQueue;
+    WDFQUEUE writerQueue;
 };
 
 typedef struct litepcie_chan {
@@ -65,7 +69,6 @@ typedef struct _DEVICE_CONTEXT
     struct litepcie_chan chan[DMA_CHANNEL_COUNT];
     WDFSPINLOCK dmaLock;
     WDFDMAENABLER dmaEnabler;
-    WDFDMATRANSACTION dmaTransaction;
     UINT32 irqs;
     WDFINTERRUPT intr;
     UINT32 irqs_requested;

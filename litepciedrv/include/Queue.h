@@ -17,7 +17,6 @@ typedef enum {
 
 typedef struct FILE_CONTEXT_S {
     LITEPCIEDEV dev;
-    WDFQUEUE queue;
     PDEVICE_CONTEXT ctx;
     PLITEPCIE_CHAN dmaChan;
     UINT8 reader;
@@ -42,18 +41,32 @@ litepciedrvQueueInitialize(
     _In_ WDFDEVICE Device
     );
 
+NTSTATUS
+litepciedrvQueueInitChannel(
+    _In_ WDFDEVICE Device,
+    _In_ PLITEPCIE_CHAN dmaChan
+);
 
 // File IO Event Handlers
 EVT_WDF_DEVICE_FILE_CREATE          litepciedrvEvtDeviceFileCreate;
 EVT_WDF_FILE_CLOSE                  litepciedrvEvtFileClose;
 EVT_WDF_FILE_CLEANUP                litepciedrvEvtFileCleanup;
 
-//
 // Events from the IoQueue object
-//
 EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL litepciedrvEvtIoDeviceControl;
 EVT_WDF_IO_QUEUE_IO_STOP litepciedrvEvtIoStop;
 EVT_WDF_IO_QUEUE_IO_READ litepciedrvEvtIoRead;
 EVT_WDF_IO_QUEUE_IO_WRITE litepciedrvEvtIoWrite;
 
+// DMA Channel Queue Handlers
+VOID litepcieDmaEvtIoRead(
+    _In_ WDFQUEUE queue,
+    _In_ WDFREQUEST request,
+    _In_ size_t length
+);
+VOID litepcieDmaEvtIoWrite(
+    _In_ WDFQUEUE queue,
+    _In_ WDFREQUEST request,
+    _In_ size_t length
+);
 EXTERN_C_END
