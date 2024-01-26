@@ -494,8 +494,8 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
             "WdfDmaTransactionExecute failed: %!STATUS!", status);
         WdfDmaTransactionRelease(channel->dma.writerTransaction);
-        WdfRequestCompleteWithInformation(request, status, 0);
         channel->dma.readRequest = NULL;
+        WdfRequestCompleteWithInformation(request, status, 0);
     }
 #endif
 }
@@ -594,8 +594,8 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
             "WdfDmaTransactionExecute failed: %!STATUS!", status);
         WdfDmaTransactionRelease(channel->dma.readerTransaction);
-        WdfRequestCompleteWithInformation(request, status, 0);
         channel->dma.writeRequest = NULL;
+        WdfRequestCompleteWithInformation(request, status, 0);
     }
 #endif
 }
@@ -903,8 +903,9 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
                 status = WdfDmaTransactionRelease(pChan->dma.readerTransaction);
                 TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Reader Request Complete: Request Request 0x%p, %ld\n",
                             i, pChan->dma.writeRequest, status);
-                WdfRequestCompleteWithInformation(pChan->dma.writeRequest, status, bytesTransferred);
+                WDFREQUEST req = pChan->dma.writeRequest;
                 pChan->dma.writeRequest = NULL;
+                WdfRequestCompleteWithInformation(req, status, bytesTransferred);
             }
             else if (status == STATUS_MORE_PROCESSING_REQUIRED)
             {
@@ -957,8 +958,9 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
                 status = WdfDmaTransactionRelease(pChan->dma.writerTransaction);
                 TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Writer Request Complete: Request Request 0x%p, %ld\n",
                             i, pChan->dma.readRequest, status);
-                WdfRequestCompleteWithInformation(pChan->dma.readRequest, status, bytesTransferred);
+                WDFREQUEST req = pChan->dma.readRequest;
                 pChan->dma.readRequest = NULL;
+                WdfRequestCompleteWithInformation(req, status, bytesTransferred);
             }
             else if (status == STATUS_MORE_PROCESSING_REQUIRED)
             {
