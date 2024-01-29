@@ -496,8 +496,8 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
 //                (double)(dma.reader_hw_count - reader_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6),
 //                (double)(dma.writer_hw_count - writer_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6));
 //            printf("\t\t%10" PRIi64 "\t%10" PRIi64 "\n",
-//                (dma.reader_hw_count - dma.reader_sw_count),
-//                (dma.writer_hw_count - dma.writer_sw_count));
+//                (dma.reader_hw_count - reader_hw_count_last),
+//                (dma.writer_hw_count - writer_hw_count_last));
             /* Update errors/time/count. */
             errors = 0;
             last_time = get_time_ms();
