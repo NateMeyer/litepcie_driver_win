@@ -292,10 +292,14 @@ Return Value:
                             litepcie_dma_writer_start(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
 #endif
                             litepcie_enable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.writer_interrupt);
+                            WdfIoQueueStart(fileCtx->dmaChan->dma.writerQueue);
                         }
                         else {
+                            WdfIoQueueStopAndPurge(fileCtx->dmaChan->dma.writerQueue, NULL, NULL);
                             litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.writer_interrupt);
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_writer_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                         }
                     }
 
@@ -336,10 +340,14 @@ Return Value:
                             litepcie_dma_reader_start(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
 #endif
                             litepcie_enable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.reader_interrupt);
+                            WdfIoQueueStart(fileCtx->dmaChan->dma.readerQueue);
                         }
                         else {
+                            WdfIoQueueStopAndPurge(fileCtx->dmaChan->dma.readerQueue, NULL, NULL);
                             litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.reader_interrupt);
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_reader_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                         }
                     }
 
@@ -651,11 +659,13 @@ VOID litepciedrvEvtFileCleanup(IN WDFFILEOBJECT FileObject) {
     {
         if (file->reader)
         {
+            //WdfIoQueueStopAndPurge(file->dmaChan->dma.readerQueue, NULL, NULL);
             //Unlock reader
             file->dmaChan->dma.reader_lock = 0;
         }
         if (file->writer)
         {
+            //WdfIoQueueStopAndPurge(file->dmaChan->dma.writerQueue, NULL, NULL);
             //Unlock writer
             file->dmaChan->dma.writer_lock = 0;
         }
