@@ -9,7 +9,7 @@
 
 #include <ntddk.h>
 #include <wdf.h>
-#include "litepcie_public.h"
+#include "litepcie.h"
 
 #include "litepcie_dmadrv.h"
 #include "csr.h"

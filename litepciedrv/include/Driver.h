@@ -12,8 +12,8 @@
 #include <wdf.h>
 #include <initguid.h>
 
-#include "device.h"
-#include "queue.h"
+#include "Device.h"
+#include "Queue.h"
 #include "Trace.h"
 
 EXTERN_C_START

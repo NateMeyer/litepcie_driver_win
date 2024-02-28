@@ -23,7 +23,7 @@
 #define DMA_TABLE_LOOP_COUNT (1 << 16)
 
 struct litepcie_ioctl_reg {
-	UINT32 reg;
+	UINT32 addr;
 	UINT32 val;
 	UINT8 is_write;
 };

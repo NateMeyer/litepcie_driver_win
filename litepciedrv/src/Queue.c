@@ -7,9 +7,9 @@
  */
 #include <wchar.h>
 
-#include "driver.h"
-#include "litepcie_public.h"
-#include "queue.tmh"
+#include "Driver.h"
+#include "litepcie.h"
+#include "Queue.tmh"
 
 #include "Trace.h"
 
@@ -130,7 +130,7 @@ Return Value:
             }
             else if (pRegInData->is_write)
             {
-                litepciedrv_RegWritel(fileCtx->ctx, pRegInData->reg, pRegInData->val);
+                litepciedrv_RegWritel(fileCtx->ctx, pRegInData->addr, pRegInData->val);
                 length = 0;
             }
             else
@@ -138,10 +138,10 @@ Return Value:
                 status = WdfRequestRetrieveOutputBuffer(Request, sizeof(struct litepcie_ioctl_reg), (PVOID*)&pRegOutData, &length);
                 if (status == STATUS_SUCCESS)
                 {
-                    pRegOutData->val = litepciedrv_RegReadl(fileCtx->ctx, pRegInData->reg);
+                    pRegOutData->val = litepciedrv_RegReadl(fileCtx->ctx, pRegInData->addr);
 
                     TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE,
-                        "litepciedrv REG READ ADDR 0x%X VAL 0x%X", pRegInData->reg, pRegOutData->val);
+                        "litepciedrv REG READ ADDR 0x%X VAL 0x%X", pRegInData->addr, pRegOutData->val);
                 }
             }
         }
