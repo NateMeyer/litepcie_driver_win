@@ -22,13 +22,13 @@ typedef HANDLE file_t;
 //				POVERLAPPED lpOverlapped
 #define ioctl_args(fd, op, data) fd, op, &(data), sizeof(data), &(data), sizeof(data), NULL, NULL
 #define checked_ioctl(...) _check_ioctl((int)!DeviceIoControl(__VA_ARGS__), __FILE__, __LINE__)
-void _check_ioctl(bool status, const char* file, int line);
+void _check_ioctl(int status, const char* file, int line);
 #else
 #include <sys/ioctl.h>
 typedef int file_t;
 #define ioctl_args(fd, op, data) fd, op, &(data)
 #define checked_ioctl(...) _check_ioctl(ioctl(__VA_ARGS__), __FILE__, __LINE__) 
-void _check_ioctl(file_t status, const char *file, int line);
+void _check_ioctl(int status, const char *file, int line);
 #endif
 
 uint32_t litepcie_readl(file_t fd, uint32_t addr);
