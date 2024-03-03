@@ -7,22 +7,17 @@
 #include <string.h>
 #include <stdarg.h>
 #include <inttypes.h>
-//#include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <time.h>
 
 #ifdef _WIN32
 #include <Windows.h>
-//#include <SetupAPI.h>
-//#include <INITGUID.H>
-//#include <ioapiset.h>
+#else
+#include <unistd.h>
 #endif
 
 #include "liblitepcie.h"
-//#include "litepcie_public.h"
-#include <csr.h>
-#include <soc.h>
 
 #define DMA_EN
 #define FLASH_EN
@@ -56,12 +51,13 @@ static int64_t get_time_ms(void)
 
 /* Info */
 /*------*/
+
 static void info(void)
 {
-    HANDLE fd;
+    file_t fd;
     int i;
     unsigned char fpga_identifier[256];
-    fd = litepcie_open("\\CTRL", GENERIC_READ | GENERIC_WRITE);
+    fd = litepcie_open("\\CTRL", FILE_ATTRIBUTE_NORMAL);
     if (fd == INVALID_HANDLE_VALUE) {
         fprintf(stderr, "Could not init driver\n");
         exit(1);
@@ -80,10 +76,11 @@ static void info(void)
 #ifdef CSR_DNA_BASE
     printf("FPGA DNA:         0x%08x%08x\n",
         litepcie_readl(fd, CSR_DNA_ID_ADDR + 4 * 0),
-        litepcie_readl(fd, CSR_DNA_ID_ADDR + 4 * 1));
+        litepcie_readl(fd, CSR_DNA_ID_ADDR + 4 * 1)
+    );
 #endif
 #ifdef CSR_XADC_BASE
-    printf("FPGA Temperature: %0.1f °C\n",
+    printf("FPGA Temperature: %0.1f ï¿½C\n",
         (double)litepcie_readl(fd, CSR_XADC_TEMPERATURE_ADDR) * 503.975 / 4096 - 273.15);
     printf("FPGA VCC-INT:     %0.2f V\n",
         (double)litepcie_readl(fd, CSR_XADC_VCCINT_ADDR) / 4096 * 3);
@@ -94,11 +91,13 @@ static void info(void)
 #endif
     litepcie_close(fd);
 }
+
 /* Scratch */
 /*---------*/
+
 void scratch_test(void)
 {
-    HANDLE fd;
+    file_t fd;
 
     printf("\x1b[1m[> Scratch register test:\x1b[0m\n");
     printf("-------------------------\n");
@@ -123,13 +122,14 @@ void scratch_test(void)
     /* Close LitePCIe device. */
     litepcie_close(fd);
 }
+
 /* SPI Flash */
 /*-----------*/
 
 #ifdef FLASH_EN
 #ifdef CSR_FLASH_BASE
 
-static void flash_progress(void* opaque, const char* fmt, ...)
+static void flash_progress(void *opaque, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
@@ -138,12 +138,12 @@ static void flash_progress(void* opaque, const char* fmt, ...)
     va_end(ap);
 }
 
-static void flash_program(uint32_t base, const uint8_t* buf1, int size1)
+static void flash_program(uint32_t base, const uint8_t *buf1, int size1)
 {
-    HANDLE fd;
+    file_t fd;
 
     uint32_t size;
-    uint8_t* buf;
+    uint8_t *buf;
     int sector_size;
     int errors;
 
@@ -172,14 +172,13 @@ static void flash_program(uint32_t base, const uint8_t* buf1, int size1)
     if (errors) {
         printf("Failed %d errors.\n", errors);
         exit(1);
-    }
-    else {
+    } else {
         printf("Success.\n");
     }
 
     /* Free buffer and close LitePCIe device. */
     free(buf);
-    CloseHandle(fd);
+    litepcie_close(fd);
 }
 
 static void flash_write(const char* filename, uint32_t offset)
@@ -256,7 +255,7 @@ static void flash_read(const char* filename, uint32_t size, uint32_t offset)
 
     /* Close destination file and LitePCIe device. */
     fclose(f);
-    CloseHandle(fd);
+    litepcie_close(fd);
 }
 
 static void flash_reload(void)
@@ -363,7 +362,9 @@ static int check_pn_data(const uint32_t* buf, int count, uint32_t* pseed, int da
 
 static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_width, int auto_rx_delay)
 {
-    static struct litepcie_dma_ctrl dma = { .use_reader = 1, .use_writer = 1 };
+    static struct litepcie_dma_ctrl dma = {0};
+    dma.use_reader = 1;
+    dma.use_writer = 1;
     dma.loopback = external_loopback ? 0 : 1;
 
     if (data_width > 32 || data_width < 1) {
@@ -484,18 +485,18 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
                 printf("\x1b[1mDMA_SPEED(Gbps)\tTX_BUFFERS\tRX_BUFFERS\tDIFF\tERRORS\x1b[0m\n");
             i++;
             /* Print statistics. */
-            printf("%14.2f\t%10" PRIu64 "\t%10" PRIu64 "\t%4" PRIi64 "\t%6u\n",
-                (double)(dma.reader_sw_count - reader_sw_count_last) * DMA_BUFFER_SIZE * 8 * data_width / (get_next_pow2(data_width) * (double)duration * 1e6),
-                dma.reader_sw_count,
-                dma.writer_sw_count,
-                dma.reader_sw_count - dma.writer_sw_count,
-                errors);
-//            printf("\t\t%10.2f\t%10.2f\n",
-//                (double)(dma.reader_hw_count - reader_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6),
-//                (double)(dma.writer_hw_count - writer_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6));
-//            printf("\t\t%10" PRIi64 "\t%10" PRIi64 "\n",
-//                (dma.reader_hw_count - dma.reader_sw_count),
-//                (dma.writer_hw_count - dma.writer_sw_count));
+            printf("%14.2f\t%10" PRIu64 "\t%10" PRIu64 "\t%4" PRIu64 "\t%6u\n",
+                   (double)(dma.reader_sw_count - reader_sw_count_last) * DMA_BUFFER_SIZE * 8 * data_width / (get_next_pow2(data_width) * (double)duration * 1e6),
+                   dma.reader_sw_count,
+                   dma.writer_sw_count,
+                   dma.reader_sw_count - dma.writer_sw_count,
+                   errors);
+        //    printf("%14.2f Gbps TX \t%14.2f Gbps RX\n",
+        //        (double)(dma.reader_hw_count - reader_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6),
+        //        (double)(dma.writer_hw_count - writer_hw_count_last) * DMA_BUFFER_SIZE * 8 / ((double)duration * 1e6));
+        //    printf("\t\t%10" PRIi64 "\t%10" PRIi64 "\n",
+        //        (dma.reader_hw_count - dma.reader_sw_count),
+        //        (dma.writer_hw_count - dma.writer_sw_count));
             /* Update errors/time/count. */
             errors = 0;
             last_time = get_time_ms();

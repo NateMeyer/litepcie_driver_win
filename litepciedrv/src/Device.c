@@ -8,8 +8,8 @@
 
 #include <math.h>
 
-#include "driver.h"
-#include "device.tmh"
+#include "Driver.h"
+#include "Device.tmh"
 #include "Trace.h"
 
 #ifdef ALLOC_PRAGMA

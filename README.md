@@ -33,5 +33,12 @@ The library is intended to have a compatible API with the liblitepcie found in t
 
 3. From within the EWDK environment, build the solution with `msbuild`
 ```cmd
-<LitePCIe-Repo-Dir> > msbuild litepcie_driver_win.sln /p:Configuration=Debug /p:Platform=x64
+<LitePCIe-Repo-Dir>\litepciedrv > msbuild litepciedrv.vcxproj /p:Configuration=Debug /p:Platform=x64
+```
+
+## Build Library and test app with cmake
+
+```cmd
+<LitePCIe-Repo-Dir>\build > cmake ..
+<LitePCIe-Repo-Dir>\build > cmake --build .
 ```

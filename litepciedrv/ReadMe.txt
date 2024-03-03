@@ -17,7 +17,7 @@ litepciedrv.vcxproj.filters
     similar extensions under a specific node (for e.g. ".cpp" files are associated with the
     "Source Files" filter).
 
-litepcie_public.h
+litepcie.h
     Header file to be shared with applications.
 
 Driver.c & Driver.h
@@ -31,6 +31,8 @@ Queue.c & Queue.h
 
 Trace.h
     Definitions for WPP tracing.
+
+ ** Note: Be sure to copy the soc.h and csr.h files from your litex build in the litepciedrv/public_h folder before building
 
 /////////////////////////////////////////////////////////////////////////////
 

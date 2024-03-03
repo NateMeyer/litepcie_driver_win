@@ -6,8 +6,8 @@
  *
  */
 
-#include "driver.h"
-#include "driver.tmh"
+#include "Driver.h"
+#include "Driver.tmh"
 
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text (INIT, DriverEntry)

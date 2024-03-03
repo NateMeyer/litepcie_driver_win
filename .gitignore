@@ -2,3 +2,7 @@ x64/
 .vs/
 Debug/
 *.vcxproj.user
+csr.h
+soc.h
+build/*
+artifacts/*
