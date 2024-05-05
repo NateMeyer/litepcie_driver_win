@@ -17,6 +17,10 @@ project(litepcie)
 
 set(CMAKE_CONFIGURATION_TYPES Debug Release)
 
+
+add_compile_options($<$<CONFIG:RELEASE>:-O2>)
+
+
 add_definitions(-DUNICODE -D_UNICODE)
 
 
