@@ -35,6 +35,7 @@
 #define FLASH_RETRIES 16
 
 #if defined(_WIN32)
+#define __attribute__(x)
 void usleep(int64_t usec)
 {
     HANDLE timer;
