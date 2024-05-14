@@ -25,7 +25,7 @@
 /* Parameters */
 /*------------*/
 
-#define DMA_CHECK_DATA   /* Un-comment to disable data check */
+//#define DMA_CHECK_DATA   /* Un-comment to disable data check */
 //#define DMA_RANDOM_DATA  /* Un-comment to disable data random */
 
 /* Variables */
@@ -420,7 +420,6 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
         /* Update DMA status. */
         litepcie_dma_process(&dma);
 
-#ifdef DMA_CHECK_DATA
         /* DMA-TX Write. */
         while (1) {
             char* buf_wr;
@@ -429,8 +428,10 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
             /* Break when no buffer available for Write. */
             if (!buf_wr)
                 break;
+#ifdef DMA_CHECK_DATA
             /* Write data to buffer. */
             write_pn_data((uint32_t*)buf_wr, DMA_BUFFER_SIZE / sizeof(uint32_t), &seed_wr, data_width);
+#endif
         }
 
         /* DMA-RX Read/Check */
@@ -441,6 +442,7 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
             /* Break when no buffer available for Read. */
             if (!buf_rd)
                 break;
+#ifdef DMA_CHECK_DATA
             /* Skip the first 128 DMA loops. */
             if (dma.writer_hw_count < 128 * DMA_BUFFER_COUNT)
                 break;
@@ -473,9 +475,9 @@ static void dma_test(uint8_t zero_copy, uint8_t external_loopback, int data_widt
                     goto end;
                 }
             }
+#endif
 
         }
-#endif
 
         /* Statistics every 200ms. */
         int64_t duration = get_time_ms() - last_time;

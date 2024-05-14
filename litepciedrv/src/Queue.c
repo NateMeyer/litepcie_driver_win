@@ -62,6 +62,7 @@ Return Value:
     queueConfig.EvtIoRead = litepciedrvEvtIoRead;
     queueConfig.EvtIoWrite = litepciedrvEvtIoWrite;
     queueConfig.EvtIoStop = litepciedrvEvtIoStop;
+    queueConfig.DefaultQueue = TRUE;
 
     status = WdfIoQueueCreate(
                  Device,
@@ -74,6 +75,48 @@ Return Value:
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_QUEUE, "WdfIoQueueCreate failed %!STATUS!", status);
         return status;
     }
+
+    return status;
+}
+
+
+NTSTATUS litepciedrvQueueInitChannel(WDFDEVICE dev, PLITEPCIE_CHAN pDmaChan)
+{
+    NTSTATUS status;
+
+    WDF_IO_QUEUE_CONFIG readerConfig, writerConfig;
+    WDF_OBJECT_ATTRIBUTES queueAttributes;
+
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(
+        &readerConfig,
+        WdfIoQueueDispatchSequential
+    );
+    readerConfig.EvtIoWrite = litepcieDmaEvtIoWrite;
+    readerConfig.DefaultQueue = FALSE;
+
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(
+        &writerConfig,
+        WdfIoQueueDispatchSequential
+    );
+    writerConfig.EvtIoRead = litepcieDmaEvtIoRead;
+    writerConfig.DefaultQueue = FALSE;
+
+    WDF_OBJECT_ATTRIBUTES_INIT(&queueAttributes);
+    queueAttributes.SynchronizationScope = WdfSynchronizationScopeQueue;
+
+    status = WdfIoQueueCreate(
+        dev,
+        &writerConfig,
+        &queueAttributes,
+        &pDmaChan->dma.writerQueue
+    );
+
+    status = WdfIoQueueCreate(
+        dev,
+        &readerConfig,
+        &queueAttributes,
+        &pDmaChan->dma.readerQueue
+    );
 
     return status;
 }
@@ -250,12 +293,18 @@ Return Value:
                     if (pDmaWriterInData->enable != fileCtx->dmaChan->dma.writer_enable) {
                         /* enable / disable DMA */
                         if (pDmaWriterInData->enable) {
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_writer_start(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                             litepcie_enable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.writer_interrupt);
+                            //WdfIoQueueStart(fileCtx->dmaChan->dma.writerQueue);
                         }
                         else {
+                            WdfIoQueuePurgeSynchronously(fileCtx->dmaChan->dma.writerQueue);
                             litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.writer_interrupt);
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_writer_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                         }
                     }
 
@@ -292,12 +341,18 @@ Return Value:
                     if (pDmaReaderInData->enable != fileCtx->dmaChan->dma.reader_enable) {
                         /* enable / disable DMA */
                         if (pDmaReaderInData->enable) {
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_reader_start(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                             litepcie_enable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.reader_interrupt);
+                            //WdfIoQueueStart(fileCtx->dmaChan->dma.readerQueue);
                         }
                         else {
+                            WdfIoQueuePurgeSynchronously(fileCtx->dmaChan->dma.readerQueue);
                             litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.reader_interrupt);
+#ifdef DMA_USE_COMMON_BUFFER
                             litepcie_dma_reader_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+#endif
                         }
                     }
 
@@ -464,7 +519,7 @@ VOID litepciedrvEvtIoRead(
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE,
             "litepciedrvEvtIoRead Request %p\n", request);
 
-        litepciedrv_ChannelRead(fileCtx->dmaChan, request, length);
+        WdfRequestForwardToIoQueue(request, fileCtx->dmaChan->dma.writerQueue);
 
         return;
     }
@@ -488,7 +543,7 @@ VOID litepciedrvEvtIoWrite(
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE,
             "litepciedrvEvtIoWrite Request %p\n", request);
 
-        litepciedrv_ChannelWrite(fileCtx->dmaChan, request, length);
+        WdfRequestForwardToIoQueue(request, fileCtx->dmaChan->dma.readerQueue);
 
         return;
     }
@@ -524,9 +579,20 @@ Return Value:
 
 --*/
 {
+    PFILE_CONTEXT fileCtx = GetFileContext(WdfRequestGetFileObject(Request));
+
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_QUEUE, 
                 "%!FUNC! Queue 0x%p, Request 0x%p ActionFlags %d", 
                 Queue, Request, ActionFlags);
+    
+    // Stop in-process Transactions/Requests
+    litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.writer_interrupt);
+    litepcie_dma_writer_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+
+    litepcie_disable_interrupt(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->dma.reader_interrupt);
+    litepcie_dma_reader_stop(fileCtx->dmaChan->litepcie_dev, fileCtx->dmaChan->index);
+
+    WdfRequestStopAcknowledge(Request, TRUE);
 
     return;
 }
@@ -584,12 +650,9 @@ ErrExit:
 
 VOID litepciedrvEvtFileClose(IN WDFFILEOBJECT FileObject) {
     PUNICODE_STRING fileName = WdfFileObjectGetFileName(FileObject);
-    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_QUEUE, "Closing file %wZ", fileName);
-}
-
-VOID litepciedrvEvtFileCleanup(IN WDFFILEOBJECT FileObject) {
-    PUNICODE_STRING fileName = WdfFileObjectGetFileName(FileObject);
     PFILE_CONTEXT file = GetFileContext(FileObject);
+
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_QUEUE, "Closing file %wZ", fileName);
 
     if (file->dev == LITEPCIE_CTRL)
     {
@@ -597,17 +660,80 @@ VOID litepciedrvEvtFileCleanup(IN WDFFILEOBJECT FileObject) {
     }
     if (file->dev == LITEPCIE_DMA)
     {
+        /*
         if (file->reader)
         {
+            //WdfIoQueueStopAndPurge(file->dmaChan->dma.readerQueue, NULL, NULL);
             //Unlock reader
             file->dmaChan->dma.reader_lock = 0;
+            WdfIoQueuePurgeSynchronously(file->dmaChan->dma.readerQueue);
+            litepcie_disable_interrupt(file->dmaChan->litepcie_dev, file->dmaChan->dma.reader_interrupt);
+            litepcie_dma_reader_stop(file->dmaChan->litepcie_dev, file->dmaChan->index);
         }
         if (file->writer)
         {
+            //WdfIoQueueStopAndPurge(file->dmaChan->dma.writerQueue, NULL, NULL);
             //Unlock writer
             file->dmaChan->dma.writer_lock = 0;
+            WdfIoQueuePurgeSynchronously(file->dmaChan->dma.writerQueue);
+            litepcie_disable_interrupt(file->dmaChan->litepcie_dev, file->dmaChan->dma.writer_interrupt);
+            litepcie_dma_writer_stop(file->dmaChan->litepcie_dev, file->dmaChan->index);
         }
+        */
     }
+}
+
+VOID litepciedrvEvtFileCleanup(IN WDFFILEOBJECT FileObject) {
+    PUNICODE_STRING fileName = WdfFileObjectGetFileName(FileObject);
 
     TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE, "Cleanup %wZ", fileName);
+}
+
+VOID litepcieDmaEvtIoRead(
+    _In_ WDFQUEUE queue,
+    _In_ WDFREQUEST request,
+    _In_ size_t length
+)
+// Callback function on DMA Channel Read
+{
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_QUEUE,
+        "%!FUNC! Queue 0x%p, Request 0x%p Length %d",
+        queue, request, (UINT32)length);
+    PFILE_CONTEXT fileCtx = GetFileContext(WdfRequestGetFileObject(request));
+    if (fileCtx->dev == LITEPCIE_DMA)
+    {
+
+        TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE,
+            "litepcieDmaEvtIoRead Request %p\n", request);
+
+        litepciedrv_ChannelRead(fileCtx->dmaChan, request, length);
+
+        return;
+    }
+
+    WdfRequestComplete(request, STATUS_SUCCESS);
+}
+
+VOID litepcieDmaEvtIoWrite(
+    _In_ WDFQUEUE queue,
+    _In_ WDFREQUEST request,
+    _In_ size_t length
+)
+// Callback function on DMA Channel Write
+{
+    TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_QUEUE,
+        "%!FUNC! Queue 0x%p, Request 0x%p Length %d",
+        queue, request, (UINT32)length);
+    PFILE_CONTEXT fileCtx = GetFileContext(WdfRequestGetFileObject(request));
+    if (fileCtx->dev == LITEPCIE_DMA)
+    {
+        TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_QUEUE,
+            "litepcieDmaEvtIoWrite Request %p\n", request);
+
+        litepciedrv_ChannelWrite(fileCtx->dmaChan, request, length);
+
+        return;
+    }
+
+    WdfRequestComplete(request, STATUS_SUCCESS);
 }

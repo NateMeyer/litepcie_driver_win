@@ -38,16 +38,20 @@ void litepcie_dma_writer(file_t fd, uint8_t enable, int64_t *hw_count, int64_t *
     struct litepcie_ioctl_dma_writer m;
     m.enable = enable;
     checked_ioctl(ioctl_args(fd, LITEPCIE_IOCTL_DMA_WRITER, m));
-    *hw_count = m.hw_count;
-    *sw_count = m.sw_count;
+    if(hw_count != NULL)
+        *hw_count = m.hw_count;
+    if (sw_count != NULL)
+        *sw_count = m.sw_count;
 }
 
 void litepcie_dma_reader(file_t fd, uint8_t enable, int64_t *hw_count, int64_t *sw_count) {
     struct litepcie_ioctl_dma_reader m;
     m.enable = enable;
     checked_ioctl(ioctl_args(fd, LITEPCIE_IOCTL_DMA_READER, m));
-    *hw_count = m.hw_count;
-    *sw_count = m.sw_count;
+    if (hw_count != NULL)
+        *hw_count = m.hw_count;
+    if (sw_count != NULL)
+        *sw_count = m.sw_count;
 }
 
 /* lock */
@@ -343,6 +347,7 @@ char *litepcie_dma_next_read_buffer(struct litepcie_dma_ctrl *dma)
     if (!dma->buffers_available_read)
         return NULL;
     dma->buffers_available_read--;
+    dma->writer_sw_count++;
     char *ret = dma->buf_rd + dma->usr_read_buf_offset * DMA_BUFFER_SIZE;
     dma->usr_read_buf_offset = (dma->usr_read_buf_offset + 1) % DMA_BUFFER_COUNT;
     return ret;
@@ -353,6 +358,7 @@ char *litepcie_dma_next_write_buffer(struct litepcie_dma_ctrl *dma)
     if (!dma->buffers_available_write)
         return NULL;
     dma->buffers_available_write--;
+    dma->reader_sw_count++;
     char *ret = dma->buf_wr + dma->usr_write_buf_offset * DMA_BUFFER_SIZE;
     dma->usr_write_buf_offset = (dma->usr_write_buf_offset + 1) % DMA_BUFFER_COUNT;
     return ret;

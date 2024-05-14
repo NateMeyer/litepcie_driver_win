@@ -32,6 +32,21 @@ static NTSTATUS litepciedrv_SetupInterrupts(PDEVICE_CONTEXT dev,
                                             WDFCMRESLIST ResourcesRaw,
                                             WDFCMRESLIST ResourcesTranslated);
 
+static BOOLEAN litepciedrv_writerDma(WDFDMATRANSACTION Transaction,
+                                     WDFDEVICE Device,
+                                     WDFCONTEXT Context,
+                                     WDF_DMA_DIRECTION Direction,
+                                     PSCATTER_GATHER_LIST SgList);
+
+static BOOLEAN litepciedrv_readerDma(WDFDMATRANSACTION Transaction,
+                                     WDFDEVICE Device,
+                                     WDFCONTEXT Context,
+                                     WDF_DMA_DIRECTION Direction,
+                                     PSCATTER_GATHER_LIST SgList);
+
+static void litepciedrv_writerCancel(WDFREQUEST request);
+
+static void litepciedrv_readerCancel(WDFREQUEST request);
 
 UINT32 litepciedrv_RegReadl(PDEVICE_CONTEXT dev, UINT32 reg)
 {
@@ -280,22 +295,26 @@ NTSTATUS litepciedrv_DeviceOpen(WDFDEVICE wdfDevice,
 #else
             WdfDmaProfileScatterGatherDuplex,
 #endif
-            DMA_BUFFER_SIZE);
+            DMA_MAX_TRANSFER_LEN);
     status = WdfDmaEnablerCreate(litepcie->deviceDrv, &dmaConfig, WDF_NO_OBJECT_ATTRIBUTES, &litepcie->dmaEnabler);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Failed to create dmaEnabler: %!STATUS!", status);
         return status;
     }
 
-    status = WdfDmaTransactionCreate(litepcie->dmaEnabler, WDF_NO_OBJECT_ATTRIBUTES, &litepcie->dmaTransaction);
+    WdfDmaEnablerSetMaximumScatterGatherElements(litepcie->dmaEnabler, DMA_BUFFER_COUNT);
+
+/*    status = WdfDmaTransactionCreate(litepcie->dmaEnabler, WDF_NO_OBJECT_ATTRIBUTES, &litepcie->dmaTransaction);
     if (!NT_SUCCESS(status)) {
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Failed to create dmaTransaction: %!STATUS!", status);
         return status;
     }
+*/
 
-    //Allocate DMA Buffers
     /* for each dma channel */
     for (UINT32 i = 0; i < litepcie->channels; i++) {
+#ifdef DMA_USE_COMMON_BUFFER
+        //Allocate DMA Buffers
         struct litepcie_dma_chan* dmachan = &litepcie->chan[i].dma;
         //Allocate Common buffer for the channel read transactions
         status = WdfCommonBufferCreate(litepcie->dmaEnabler,
@@ -338,6 +357,25 @@ NTSTATUS litepciedrv_DeviceOpen(WDFDEVICE wdfDevice,
                 return STATUS_NO_MEMORY;
             }
         }
+#else
+        //Create DMA Transactions
+        struct litepcie_dma_chan* dmachan = &litepcie->chan[i].dma;
+        status = WdfDmaTransactionCreate(litepcie->dmaEnabler, WDF_NO_OBJECT_ATTRIBUTES, &dmachan->readerTransaction);
+
+        if (!NT_SUCCESS(status)) {
+            TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Failed to create Read Transaction for channel %d: %!STATUS!", i, status);
+            return status;
+        }
+
+        status = WdfDmaTransactionCreate(litepcie->dmaEnabler, WDF_NO_OBJECT_ATTRIBUTES, &dmachan->writerTransaction);
+        
+        if (!NT_SUCCESS(status)) {
+            TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Failed to create Write Transaction for channel %d: %!STATUS!", i, status);
+            return status;
+        }
+        
+        litepciedrvQueueInitChannel(litepcie->deviceDrv, &litepcie->chan[i]);
+#endif
     }
 
     return status;
@@ -354,6 +392,8 @@ NTSTATUS litepciedrv_DeviceClose(WDFDEVICE wdfDevice)
         struct litepcie_dma_chan *dmachan = &litepcie->chan[i].dma;
         litepciedrv_RegWritel(litepcie, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 0);
         litepciedrv_RegWritel(litepcie, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 0);
+        WdfObjectDelete(dmachan->readerQueue);
+        WdfObjectDelete(dmachan->writerQueue);
     }
 
     /* Disable all interrupts */
@@ -366,9 +406,9 @@ NTSTATUS litepciedrv_DeviceClose(WDFDEVICE wdfDevice)
     return STATUS_SUCCESS;
 }
 
-
 VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T length)
 {
+#ifdef DMA_USE_COMMON_BUFFER
     SIZE_T bytesRead = 0;
     UINT32 overflows = 0;
     WDFMEMORY outBuf;
@@ -435,10 +475,51 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
         channel->dma.readRequest = request;
         channel->dma.readRemainingBytes = length - bytesRead;
     }
+#else
+    NTSTATUS status;
+    UNREFERENCED_PARAMETER(length);
+
+    // LITEPCIE DMA calls C2H channel the "writer"
+    status = WdfDmaTransactionInitializeUsingRequest(channel->dma.writerTransaction,
+                                                     request,
+                                                     litepciedrv_writerDma,
+                                                     WdfDmaDirectionReadFromDevice);
+
+    if (!NT_SUCCESS(status))
+    {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionInitializeUsingRequest failed %x\n", status);
+        WdfDmaTransactionRelease(channel->dma.writerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+        return;
+    }
+
+    //Mark Cancellable
+    WdfRequestMarkCancelableEx(request, litepciedrv_writerCancel);
+
+    if (status == STATUS_CANCELLED)
+    {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionExecute failed: %!STATUS!", status);
+        WdfDmaTransactionRelease(channel->dma.writerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+    }
+
+    status = WdfDmaTransactionExecute(channel->dma.writerTransaction, channel);
+
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionExecute failed: %!STATUS!", status);
+        WdfRequestUnmarkCancelable(request);
+        WdfDmaTransactionRelease(channel->dma.writerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+    }
+#endif
 }
 
 VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T length)
 {
+#ifdef DMA_USE_COMMON_BUFFER
     SIZE_T bytesWritten = 0;
     UINT32 overflows = 0;
     WDFMEMORY inBuf;
@@ -503,8 +584,94 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
         channel->dma.writeRequest = request;
         channel->dma.writeRemainingBytes = length - bytesWritten;
     }
+
+#else
+    NTSTATUS status;
+    UNREFERENCED_PARAMETER(length);
+
+    // LITEPCIE DMA calls H2C channel the "reader"
+    status = WdfDmaTransactionInitializeUsingRequest(channel->dma.readerTransaction,
+                                                     request,
+                                                     litepciedrv_readerDma,
+                                                     WdfDmaDirectionWriteToDevice);
+
+    if (!NT_SUCCESS(status))
+    {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionInitializeUsingRequest failed %x\n", status);
+        WdfDmaTransactionRelease(channel->dma.readerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+        return;
+    }
+
+    //Mark Cancellable
+    WdfRequestMarkCancelableEx(request, litepciedrv_readerCancel);
+
+    if (status == STATUS_CANCELLED)
+    {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionExecute failed: %!STATUS!", status);
+        WdfDmaTransactionRelease(channel->dma.readerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+    }
+
+    //Start DMA
+    status = WdfDmaTransactionExecute(channel->dma.readerTransaction, channel);
+
+    if (!NT_SUCCESS(status)) {
+        TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE,
+            "WdfDmaTransactionExecute failed: %!STATUS!", status);
+        WdfRequestUnmarkCancelable(request);
+        WdfDmaTransactionRelease(channel->dma.readerTransaction);
+        WdfRequestCompleteWithInformation(request, status, 0);
+    }
+#endif
 }
 
+static BOOLEAN litepciedrv_writerDma(WDFDMATRANSACTION Transaction,
+    WDFDEVICE Device,
+    WDFCONTEXT Context,
+    WDF_DMA_DIRECTION Direction,
+    PSCATTER_GATHER_LIST SgList)
+{
+    PDEVICE_CONTEXT dev = DeviceGetContext(Device);
+    struct litepcie_dma_chan* dmachan;
+    UINT32 i;
+
+    UNREFERENCED_PARAMETER(Direction);
+    UNREFERENCED_PARAMETER(Transaction);
+
+    dmachan = &((PLITEPCIE_CHAN)Context)->dma;
+
+    /* Fill DMA Writer descriptors. */
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 0);
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_FLUSH_OFFSET, 1);
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_LOOP_PROG_N_OFFSET, 0);
+    for (i = 0; i < SgList->NumberOfElements; i++)
+    {
+        /* Fill buffer size + parameters. */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET,
+#ifndef DMA_BUFFER_ALIGNED
+            DMA_LAST_DISABLE |
+#endif
+            (!((SgList->NumberOfElements - i ) == 1)) * DMA_IRQ_DISABLE | /* generate an msi */
+            SgList->Elements[i].Length);                                  /* every n buffers */
+        /* Fill 32-bit Address LSB. */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET + 4, SgList->Elements[i].Address.LowPart);
+        /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_WE_OFFSET, SgList->Elements[i].Address.HighPart);
+    }
+
+    //dmachan->writer_intr_reload = FALSE;
+    //litepcie_enable_interrupt(((PLITEPCIE_CHAN)Context)->litepcie_dev, dmachan->writer_interrupt);
+
+    /* Start DMA Writer. */
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 1);
+
+    return TRUE;
+}
+
+#ifdef DMA_USE_COMMON_BUFFER
 VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
 {
     struct litepcie_dma_chan* dmachan;
@@ -537,9 +704,14 @@ VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
     dmachan->writer_hw_count_last = 0;
     dmachan->writer_sw_count = 0;
 
+    /* Set Interrupt */
+    dmachan->writer_intr_reload = TRUE;
+    litepcie_enable_interrupt(dmaChan->litepcie_dev, dmaChan->dma.writer_interrupt);
+
     /* Start DMA Writer. */
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_ENABLE_OFFSET, 1);
 }
+#endif
 
 VOID litepcie_dma_writer_stop(PDEVICE_CONTEXT dev, UINT32 index)
 {
@@ -556,11 +728,12 @@ VOID litepcie_dma_writer_stop(PDEVICE_CONTEXT dev, UINT32 index)
 
 
     /* Clear counters. */
-    dmachan->writer_hw_count = 0;
-    dmachan->writer_hw_count_last = 0;
-    dmachan->writer_sw_count = 0;
+    //dmachan->writer_hw_count = 0;
+    //dmachan->writer_hw_count_last = 0;
+    //dmachan->writer_sw_count = 0;
 }
 
+#ifdef DMA_USE_COMMON_BUFFER
 VOID litepcie_dma_reader_start(PDEVICE_CONTEXT dev, UINT32 index)
 {
     struct litepcie_dma_chan* dmachan;
@@ -593,9 +766,57 @@ VOID litepcie_dma_reader_start(PDEVICE_CONTEXT dev, UINT32 index)
     dmachan->reader_hw_count_last = 0;
     dmachan->reader_sw_count = 0;
 
+    /* set interrupt */
+    dmachan->reader_intr_reload = TRUE;
+    litepcie_enable_interrupt(dmaChan->litepcie_dev, dmaChan->dma.reader_interrupt);
+
     /* start dma reader */
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 1);
 }
+#else
+static BOOLEAN litepciedrv_readerDma(WDFDMATRANSACTION Transaction,
+    WDFDEVICE Device,
+    WDFCONTEXT Context,
+    WDF_DMA_DIRECTION Direction,
+    PSCATTER_GATHER_LIST SgList)
+{
+    PDEVICE_CONTEXT dev = DeviceGetContext(Device);
+    struct litepcie_dma_chan* dmachan;
+    UINT32 i;
+
+    UNREFERENCED_PARAMETER(Direction);
+    UNREFERENCED_PARAMETER(Transaction);
+
+    dmachan = &((PLITEPCIE_CHAN)Context)->dma;
+
+    /* Fill DMA Writer descriptors. */
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 0);
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_FLUSH_OFFSET, 1);
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_LOOP_PROG_N_OFFSET, 0);
+    for (i = 0; i < SgList->NumberOfElements; i++)
+    {
+        /* Fill buffer size + parameters. */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET,
+#ifndef DMA_BUFFER_ALIGNED
+            DMA_LAST_DISABLE |
+#endif
+            (!((SgList->NumberOfElements - i) == 1)) * DMA_IRQ_DISABLE |  /* generate an msi */
+            SgList->Elements[i].Length);                                  /* every n buffers */
+        /* Fill 32-bit Address LSB. */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, SgList->Elements[i].Address.LowPart);
+        /* Write descriptor (and fill 32-bit Address MSB for 64-bit mode). */
+        litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_WE_OFFSET, SgList->Elements[i].Address.HighPart);
+    }
+
+    //dmachan->reader_intr_reload = FALSE;
+    //litepcie_enable_interrupt(((PLITEPCIE_CHAN)Context)->litepcie_dev, dmachan->reader_interrupt);
+
+    /* Start DMA Writer. */
+    litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_ENABLE_OFFSET, 1);
+
+    return TRUE;
+}
+#endif
 
 VOID litepcie_dma_reader_stop(PDEVICE_CONTEXT dev, UINT32 index)
 {
@@ -611,17 +832,17 @@ VOID litepcie_dma_reader_stop(PDEVICE_CONTEXT dev, UINT32 index)
     litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_FLUSH_OFFSET, 1);
 
     /* Clear counters. */
-    dmachan->reader_hw_count = 0;
-    dmachan->reader_hw_count_last = 0;
-    dmachan->reader_sw_count = 0;
+    //dmachan->reader_hw_count = 0;
+    //dmachan->reader_hw_count_last = 0;
+    //dmachan->reader_sw_count = 0;
 }
 
 VOID litepcie_enable_interrupt(PDEVICE_CONTEXT dev, UINT32 interrupt)
 {
     dev->irqs_requested |= (1 << interrupt);
 
-    litepciedrv_RegWritel(dev, CSR_PCIE_MSI_ENABLE_ADDR, dev->irqs_requested);
     litepciedrv_RegWritel(dev, CSR_PCIE_MSI_CLEAR_ADDR, (1 << interrupt));
+    litepciedrv_RegWritel(dev, CSR_PCIE_MSI_ENABLE_ADDR, dev->irqs_requested);
 }
 
 VOID litepcie_disable_interrupt(PDEVICE_CONTEXT dev, UINT32 interrupt)
@@ -629,6 +850,7 @@ VOID litepcie_disable_interrupt(PDEVICE_CONTEXT dev, UINT32 interrupt)
     dev->irqs_requested &= ~(1 << interrupt);
 
     litepciedrv_RegWritel(dev, CSR_PCIE_MSI_ENABLE_ADDR, dev->irqs_requested);
+    litepciedrv_RegWritel(dev, CSR_PCIE_MSI_CLEAR_ADDR, (1 << interrupt));
 }
 
 NTSTATUS litepcie_EvtIntEnable(WDFINTERRUPT Interrupt, WDFDEVICE AssociatedDevice)
@@ -636,8 +858,8 @@ NTSTATUS litepcie_EvtIntEnable(WDFINTERRUPT Interrupt, WDFDEVICE AssociatedDevic
     PDEVICE_CONTEXT ctx = DeviceGetContext(AssociatedDevice);
     UNREFERENCED_PARAMETER(Interrupt);
     
-    litepciedrv_RegWritel(ctx, CSR_PCIE_MSI_ENABLE_ADDR, ctx->irqs_requested);
     litepciedrv_RegWritel(ctx, CSR_PCIE_MSI_CLEAR_ADDR, ctx->irqs_requested);
+    litepciedrv_RegWritel(ctx, CSR_PCIE_MSI_ENABLE_ADDR, ctx->irqs_requested);
 
 
     return STATUS_SUCCESS;
@@ -681,15 +903,32 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
     UINT32 irq_vector, irq_enable, clear_mask = 0;
     PDEVICE_CONTEXT dev = DeviceGetContext(WdfInterruptGetDevice(Interrupt));
     PLITEPCIE_CHAN pChan;
-    UINT32 loop_status, i;
+    UINT32 i;
 
+    WdfInterruptAcquireLock(Interrupt);
     irq_enable = litepciedrv_RegReadl(dev, CSR_PCIE_MSI_ENABLE_ADDR);
     irq_vector = dev->irqs_pending & irq_enable;
 
     for (i = 0; i < dev->channels; i++) {
         pChan = &dev->chan[i];
+        if (irq_vector & (1 << pChan->dma.reader_interrupt)) {
+            clear_mask |= (1 << pChan->dma.reader_interrupt);
+        }
+
+        if (irq_vector & (1 << pChan->dma.writer_interrupt)) {
+            clear_mask |= (1 << pChan->dma.writer_interrupt);
+        }
+
+    }
+    dev->irqs_pending &= ~clear_mask;
+    WdfInterruptReleaseLock(Interrupt);
+
+    for (i = 0; i < dev->channels; i++) {
+        pChan = &dev->chan[i];
         /* dma reader interrupt handling */
         if (irq_vector & (1 << pChan->dma.reader_interrupt)) {
+#ifdef DMA_USE_COMMON_BUFFER
+            UINT32 loop_status;
             loop_status = litepciedrv_RegReadl(dev, pChan->dma.base +
                 PCIE_DMA_READER_TABLE_LOOP_STATUS_OFFSET);
             WdfSpinLockAcquire(pChan->dma.readerLock);
@@ -707,10 +946,42 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
             {
                 litepciedrv_ChannelWrite(pChan, pChan->dma.writeRequest, pChan->dma.writeRemainingBytes);
             }
-            clear_mask |= (1 << pChan->dma.reader_interrupt);
+#else
+            NTSTATUS status;
+            if (WdfDmaTransactionDmaCompleted(pChan->dma.readerTransaction, &status))
+            {
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.readerTransaction);
+                pChan->dma.reader_hw_count += bytesTransferred;
+                //
+                // Complete this Request.
+                //
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Reader Complete: %lld bytes, %ld\n", i,
+                    bytesTransferred, status);
+                WDFREQUEST req = WdfDmaTransactionGetRequest(pChan->dma.readerTransaction);
+                WdfRequestUnmarkCancelable(req);
+                status = WdfDmaTransactionRelease(pChan->dma.readerTransaction);
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Reader Request Complete: Request Request 0x%p, %ld\n",
+                            i, req, status);
+                WdfRequestCompleteWithInformation(req, status, bytesTransferred);
+            }
+            else if (status == STATUS_MORE_PROCESSING_REQUIRED)
+            {
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.readerTransaction);
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Reader Unfinished: %lld bytes, %ld\n", i,
+                    bytesTransferred, status);
+            }
+            else
+            {
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.readerTransaction);
+                TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "DPC DMA%d Reader Error: %lld bytes, %ld\n", i,
+                    bytesTransferred, status);
+            }
+#endif
         }
         /* dma writer interrupt handling */
         if (irq_vector & (1 << pChan->dma.writer_interrupt)) {
+#ifdef DMA_USE_COMMON_BUFFER
+            UINT32 loop_status;
             loop_status = litepciedrv_RegReadl(dev, pChan->dma.base +
                 PCIE_DMA_WRITER_TABLE_LOOP_STATUS_OFFSET);
             WdfSpinLockAcquire(pChan->dma.writerLock);
@@ -728,10 +999,40 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
             {
                 litepciedrv_ChannelRead(pChan, pChan->dma.readRequest, pChan->dma.readRemainingBytes);
             }
-            clear_mask |= (1 << pChan->dma.writer_interrupt);
+#else
+            NTSTATUS status;
+            if (WdfDmaTransactionDmaCompleted(pChan->dma.writerTransaction, &status))
+            {
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.writerTransaction);
+                pChan->dma.writer_hw_count += bytesTransferred;
+                //
+                // Complete this Request.
+                //
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Writer Complete: %lld bytes, %ld\n", i,
+                            bytesTransferred, status);
+                WDFREQUEST req = WdfDmaTransactionGetRequest(pChan->dma.writerTransaction);
+                WdfRequestUnmarkCancelable(req);
+                status = WdfDmaTransactionRelease(pChan->dma.writerTransaction);
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Writer Request Complete: Request Request 0x%p, %ld\n",
+                            i, req, status);
+                WdfRequestCompleteWithInformation(req, status, bytesTransferred);
+            }
+            else if (status == STATUS_MORE_PROCESSING_REQUIRED)
+            {
+
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.writerTransaction);
+                TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_DEVICE, "DPC DMA%d Writer Unfinished: %lld bytes, %ld\n", i,
+                    bytesTransferred, status);
+            }
+            else
+            {
+                size_t bytesTransferred = WdfDmaTransactionGetBytesTransferred(pChan->dma.writerTransaction);
+                TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "DPC DMA%d Writer Error: %lld bytes, %ld\n", i,
+                    bytesTransferred, status);
+            }
+#endif
         }
     }
-    dev->irqs_pending &= ~clear_mask;
 }
 
 static NTSTATUS litepciedrv_SetupInterrupts(PDEVICE_CONTEXT dev,
@@ -783,4 +1084,28 @@ static NTSTATUS litepciedrv_SetupInterrupts(PDEVICE_CONTEXT dev,
         }
     }
     return status;
+}
+
+static void litepciedrv_writerCancel(WDFREQUEST request)
+{
+    //Clear writer transaction
+    PFILE_CONTEXT ctx = GetFileContext(WdfRequestGetFileObject(request));
+    if (WdfDmaTransactionCancel(ctx->dmaChan->dma.writerTransaction))
+    {
+        WdfDmaTransactionRelease(ctx->dmaChan->dma.writerTransaction);
+    }
+
+    WdfRequestComplete(request, STATUS_CANCELLED);
+}
+
+static void litepciedrv_readerCancel(WDFREQUEST request)
+{
+    //Clear reader transaction
+    PFILE_CONTEXT ctx = GetFileContext(WdfRequestGetFileObject(request));
+    if (WdfDmaTransactionCancel(ctx->dmaChan->dma.readerTransaction))
+    {
+        WdfDmaTransactionRelease(ctx->dmaChan->dma.readerTransaction);
+    }
+
+    WdfRequestComplete(request, STATUS_CANCELLED);
 }
