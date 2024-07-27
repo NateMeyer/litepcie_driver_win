@@ -383,6 +383,7 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
         return;
     }
     
+    bytesRead = channel->dma.readBytes;
     while (bytesRead < length)
     {
         if ((length - bytesRead) < DMA_BUFFER_SIZE)
@@ -403,12 +404,15 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
             {
                 overflows++;
             }
+            else
+            {
 
-            WdfMemoryCopyFromBuffer(outBuf, bytesRead,
-                channel->dma.writer_handle[channel->dma.writer_sw_count % DMA_BUFFER_COUNT],
-                DMA_BUFFER_SIZE);
+                WdfMemoryCopyFromBuffer(outBuf, bytesRead,
+                    channel->dma.writer_handle[channel->dma.writer_sw_count % DMA_BUFFER_COUNT],
+                    DMA_BUFFER_SIZE);
+                bytesRead += DMA_BUFFER_SIZE;
+            }
             channel->dma.writer_sw_count += 1;
-            bytesRead += DMA_BUFFER_SIZE;
         }
         else
         {
@@ -422,18 +426,19 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Overflow Error in ChannelRead: %d\n", overflows);
     }
 
-    //if ((length - bytesRead) < DMA_BUFFER_SIZE)
-    if (bytesRead > 0)
+    if ((length - bytesRead) < DMA_BUFFER_SIZE)
     {
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesRead);
         channel->dma.readRequest = NULL;
-        channel->dma.readRemainingBytes = 0;
+        channel->dma.readBytes = 0;
+        channel->dma.readReqBytes = 0;
     }
     else
     {
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelRead deferred\n");
         channel->dma.readRequest = request;
-        channel->dma.readRemainingBytes = length - bytesRead;
+        channel->dma.readBytes = bytesRead;
+        channel->dma.readReqBytes = length;
     }
 }
 
@@ -452,6 +457,8 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
         WdfRequestCompleteWithInformation(request, status, 0);
         return;
     }
+
+    bytesWritten = channel->dma.writeBytes;
     while (bytesWritten < length)
     {
         if ((length - bytesWritten) < DMA_BUFFER_SIZE)
@@ -490,18 +497,19 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Overflow Error in ChannelWrite: %d\n", overflows);
     }
 
-    //if ((length - bytesWritten) < DMA_BUFFER_SIZE)
-    if (bytesWritten > 0)
+    if ((length - bytesWritten) < DMA_BUFFER_SIZE)
     {
         WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesWritten);
         channel->dma.writeRequest = NULL;
-        channel->dma.writeRemainingBytes = 0;
+        channel->dma.writeBytes = 0;
+        channel->dma.writeReqBytes = 0;
     }
     else
     {
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelWrite deferred\n");
         channel->dma.writeRequest = request;
-        channel->dma.writeRemainingBytes = length - bytesWritten;
+        channel->dma.writeBytes = bytesWritten;
+        channel->dma.writeReqBytes = length;
     }
 }
 
@@ -523,7 +531,7 @@ VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
 #ifndef DMA_BUFFER_ALIGNED
             DMA_LAST_DISABLE |
 #endif
-            (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
+            ((!((i % DMA_BUFFER_PER_IRQ) == (DMA_BUFFER_PER_IRQ - 1))) * DMA_IRQ_DISABLE) | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
         /* Fill 32-bit Address LSB. */
         litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_WRITER_TABLE_VALUE_OFFSET + 4, dmachan->writer_addr[i].LowPart);
@@ -579,7 +587,7 @@ VOID litepcie_dma_reader_start(PDEVICE_CONTEXT dev, UINT32 index)
 #ifndef DMA_BUFFER_ALIGNED
             DMA_LAST_DISABLE |
 #endif
-            (!(i % DMA_BUFFER_PER_IRQ == 0)) * DMA_IRQ_DISABLE | /* generate an msi */
+            ((!((i % DMA_BUFFER_PER_IRQ) == (DMA_BUFFER_PER_IRQ - 1))) * DMA_IRQ_DISABLE) | /* generate an msi */
             DMA_BUFFER_SIZE);                                  /* every n buffers */
         /* Fill 32-bit Address LSB. */
         litepciedrv_RegWritel(dev, dmachan->base + PCIE_DMA_READER_TABLE_VALUE_OFFSET + 4, dmachan->reader_addr[i].LowPart);
@@ -705,7 +713,7 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
 #endif
             if (pChan->dma.writeRequest != NULL)
             {
-                litepciedrv_ChannelWrite(pChan, pChan->dma.writeRequest, pChan->dma.writeRemainingBytes);
+                litepciedrv_ChannelWrite(pChan, pChan->dma.writeRequest, pChan->dma.writeReqBytes);
             }
             clear_mask |= (1 << pChan->dma.reader_interrupt);
         }
@@ -726,7 +734,7 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
 #endif
             if (pChan->dma.readRequest != NULL)
             {
-                litepciedrv_ChannelRead(pChan, pChan->dma.readRequest, pChan->dma.readRemainingBytes);
+                litepciedrv_ChannelRead(pChan, pChan->dma.readRequest, pChan->dma.readReqBytes);
             }
             clear_mask |= (1 << pChan->dma.writer_interrupt);
         }

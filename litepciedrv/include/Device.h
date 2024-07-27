@@ -24,9 +24,11 @@ struct litepcie_dma_chan {
     WDFSPINLOCK readerLock;
     WDFSPINLOCK writerLock;
     WDFREQUEST readRequest;
-    SIZE_T readRemainingBytes;
+    SIZE_T readBytes;
+    SIZE_T readReqBytes;
     WDFREQUEST writeRequest;
-    SIZE_T writeRemainingBytes;
+    SIZE_T writeBytes;
+    SIZE_T writeReqBytes;
     WDFCOMMONBUFFER readBuffer;
     WDFCOMMONBUFFER writeBuffer;
     PVOID reader_handle[DMA_BUFFER_COUNT];
