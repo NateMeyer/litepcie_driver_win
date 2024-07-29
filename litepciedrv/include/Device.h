@@ -104,7 +104,11 @@ VOID litepciedrv_RegWritel(PDEVICE_CONTEXT dev, UINT32 reg, UINT32 val);
 
 VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T length);
 
+VOID litepciedrv_ChannelReadCancel(WDFREQUEST request);
+
 VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T length);
+
+VOID litepciedrv_ChannelWriteCancel(WDFREQUEST request);
 
 VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index);
 

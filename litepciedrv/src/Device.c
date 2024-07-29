@@ -426,20 +426,38 @@ VOID litepciedrv_ChannelRead(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T 
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Overflow Error in ChannelRead: %d\n", overflows);
     }
 
+    // Read Complete, no more buffers can be transferred
     if ((length - bytesRead) < DMA_BUFFER_SIZE)
     {
-        WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesRead);
         channel->dma.readRequest = NULL;
         channel->dma.readBytes = 0;
         channel->dma.readReqBytes = 0;
+        WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesRead);
     }
     else
     {
+        // More work needed.  Revisit transfer after more buffers have been DMAd
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelRead deferred\n");
-        channel->dma.readRequest = request;
+        WdfRequestMarkCancelable(request, litepciedrv_ChannelReadCancel);
         channel->dma.readBytes = bytesRead;
         channel->dma.readReqBytes = length;
+        channel->dma.readRequest = request;
     }
+}
+
+VOID litepciedrv_ChannelReadCancel(WDFREQUEST request)
+{
+    PFILE_CONTEXT fileCtx = GetFileContext(WdfRequestGetFileObject(request));
+    TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE,
+        "litepciedrv_ChannelReadCancel %p\n", request);
+
+    if(fileCtx->dmaChan->dma.readRequest == request)
+    {
+        fileCtx->dmaChan->dma.readRequest = NULL;
+        fileCtx->dmaChan->dma.readBytes = 0;
+        fileCtx->dmaChan->dma.readReqBytes = 0;
+    }
+    WdfRequestComplete(request, STATUS_CANCELLED);
 }
 
 VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T length)
@@ -497,20 +515,38 @@ VOID litepciedrv_ChannelWrite(PLITEPCIE_CHAN channel, WDFREQUEST request, SIZE_T
         TraceEvents(TRACE_LEVEL_ERROR, TRACE_DEVICE, "Overflow Error in ChannelWrite: %d\n", overflows);
     }
 
+    // Write Complete, no more buffers can be transferred
     if ((length - bytesWritten) < DMA_BUFFER_SIZE)
     {
-        WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesWritten);
         channel->dma.writeRequest = NULL;
         channel->dma.writeBytes = 0;
         channel->dma.writeReqBytes = 0;
+        WdfRequestCompleteWithInformation(request, STATUS_SUCCESS, bytesWritten);
     }
     else
     {
+        // More work needed.  Revisit transfer after more buffers have been DMAd
         TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE, "ChannelWrite deferred\n");
-        channel->dma.writeRequest = request;
+        WdfRequestMarkCancelable(request, litepciedrv_ChannelWriteCancel);
         channel->dma.writeBytes = bytesWritten;
         channel->dma.writeReqBytes = length;
+        channel->dma.writeRequest = request;
     }
+}
+
+VOID litepciedrv_ChannelWriteCancel(WDFREQUEST request)
+{
+    PFILE_CONTEXT fileCtx = GetFileContext(WdfRequestGetFileObject(request));
+    TraceEvents(TRACE_LEVEL_VERBOSE, TRACE_DEVICE,
+        "litepciedrv_ChannelWriteCancel %p\n", request);
+
+    if(fileCtx->dmaChan->dma.writeRequest == request)
+    {
+        fileCtx->dmaChan->dma.writeRequest = NULL;
+        fileCtx->dmaChan->dma.writeBytes = 0;
+        fileCtx->dmaChan->dma.writeReqBytes = 0;
+    }
+    WdfRequestComplete(request, STATUS_CANCELLED);
 }
 
 VOID litepcie_dma_writer_start(PDEVICE_CONTEXT dev, UINT32 index)
@@ -713,7 +749,16 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
 #endif
             if (pChan->dma.writeRequest != NULL)
             {
-                litepciedrv_ChannelWrite(pChan, pChan->dma.writeRequest, pChan->dma.writeReqBytes);
+                if( STATUS_CANCELLED != WdfRequestUnmarkCancelable(pChan->dma.writeRequest))
+                {
+                    litepciedrv_ChannelWrite(pChan, pChan->dma.writeRequest, pChan->dma.writeReqBytes);
+                }
+                else
+                {
+                    pChan->dma.writeRequest = NULL;
+                    pChan->dma.writeBytes = 0;
+                    pChan->dma.writeReqBytes = 0;
+                }
             }
             clear_mask |= (1 << pChan->dma.reader_interrupt);
         }
@@ -734,7 +779,16 @@ VOID litepcie_EvtDpc(IN WDFINTERRUPT Interrupt, IN WDFOBJECT device)
 #endif
             if (pChan->dma.readRequest != NULL)
             {
-                litepciedrv_ChannelRead(pChan, pChan->dma.readRequest, pChan->dma.readReqBytes);
+                if( STATUS_CANCELLED != WdfRequestUnmarkCancelable(pChan->dma.readRequest))
+                {
+                    litepciedrv_ChannelRead(pChan, pChan->dma.readRequest, pChan->dma.readReqBytes);
+                }
+                else
+                {
+                    pChan->dma.readRequest = NULL;
+                    pChan->dma.readBytes = 0;
+                    pChan->dma.readReqBytes = 0;
+                }
             }
             clear_mask |= (1 << pChan->dma.writer_interrupt);
         }
