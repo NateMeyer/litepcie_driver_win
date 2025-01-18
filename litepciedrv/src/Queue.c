@@ -184,6 +184,7 @@ Return Value:
         }
         break;
 #endif
+#ifdef CSR_ICAP_BASE
     case LITEPCIE_IOCTL_ICAP:
         struct litepcie_ioctl_icap* pIcapInData;
         status = WdfRequestRetrieveInputBuffer(Request, sizeof(struct litepcie_ioctl_icap), (PVOID*)&pIcapInData, &length);
@@ -204,6 +205,7 @@ Return Value:
             }
         }
         break;
+#endif
     case LITEPCIE_IOCTL_DMA:
         if (fileCtx->dev != LITEPCIE_DMA)
         {
